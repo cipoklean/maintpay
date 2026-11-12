@@ -1,0 +1,59 @@
+@import "tailwindcss";
+
+@theme {
+  --color-paper: #f3efe6;
+  --color-card: #faf8f3;
+  --color-ink: #1c1915;
+  --color-muted: #6e675e;
+  --color-line: #ddd4c6;
+  --color-warn: #8a4510;
+  --color-warn-bg: #f6e4d0;
+  --color-ok: #1b5c3e;
+  --color-ok-bg: #e3f0e8;
+  --color-hold: #8b3030;
+  --color-hold-bg: #f8e4e1;
+  --color-sage: #3f6f5b;
+  --color-sage-bg: #e4f0ea;
+  --font-sans: "Outfit", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Fraunces", Georgia, serif;
+  --radius-sm: 0.5rem;
+  --radius-md: 0.85rem;
+}
+
+@layer base {
+  html {
+    background: var(--color-paper);
+    color: var(--color-ink);
+    text-size-adjust: 100%;
+  }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    font-family: var(--font-sans);
+    background: var(--color-paper);
+  }
+  input,
+  select,
+  textarea {
+    font-size: 1rem;
+    scroll-margin-top: 1.5rem;
+    scroll-margin-bottom: 50vh;
+  }
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+  button:disabled {
+    cursor: not-allowed;
+  }
+  button:focus-visible,
+  a:focus-visible,
+  input:focus-visible,
+  textarea:focus-visible,
+  summary:focus-visible {
+    outline: 2px solid var(--color-sage);
+    outline-offset: 2px;
+  }
+}
