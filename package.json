@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "node --env-file-if-exists=.env scripts/demo-dev.mjs",
     "demo:seed": "node --env-file-if-exists=.env scripts/demo-seed.mjs",
+    "outlayer:register": "node --env-file-if-exists=.env scripts/outlayer-register.mjs",
     "build": "node scripts/with-app-env.mjs vite build && npm run db:migrate",
     "db:migrate": "node scripts/migrate.mjs",
     "build:dev": "node scripts/with-app-env.mjs vite build --mode development",

@@ -31,7 +31,7 @@ function Welcome({ showSignIn }: { showSignIn: boolean }) {
         <p className="text-base font-medium tracking-wide text-sage uppercase">MaintPay</p>
         <h1 className="mt-3 font-display text-4xl leading-tight break-words text-ink sm:text-5xl">Pay only after a person reviews the exact change.</h1>
         <p className="mt-4 text-base leading-relaxed text-muted">
-          A client agrees the work. A different person accepts that exact commit. MaintPay can then store one payment attempt. It does not send the money, and the client can still take it back.
+          A client agrees the work. A different person accepts that exact commit. The client can then authorize one stored testnet payment through OutLayer. Only a matching final chain receipt is Paid; until submission, the wallet is not locked.
         </p>
       </div>
       <Link

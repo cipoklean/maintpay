@@ -4,7 +4,7 @@ import { useServerFn } from "@tanstack/react-start";
 import { UserButton } from "@/lib/auth/gates";
 import { useCurrentUserState } from "@/lib/auth/use-current-user";
 import { AGREEMENT_FOCUS_ORDER, checkReading, validateAgreement } from "@/lib/maintpay/form-ui";
-import { cancelJob, checkDeposit, claimAttempt, createJob, getJob, linkPull, listJobs, readBalance, review, type JobView } from "@/lib/maintpay/api";
+import { cancelJob, checkDeposit, claimAttempt, confirmPayment, createJob, getJob, linkPull, listJobs, readBalance, refreshAttempt, review, sendAttempt, type JobView } from "@/lib/maintpay/api";
 import { shareJobUrl } from "@/lib/maintpay/job-link";
 import { isIllustrativeJob, SAMPLE_BANNER } from "@/lib/maintpay/sample";
 
@@ -77,7 +77,7 @@ export function Handoff() {
       </header>
 
       <p className="rounded-md border border-line bg-card px-4 py-3 text-base leading-relaxed text-ink">
-        This build stops before a transfer. A stored attempt is not a payment. A testnet balance is only a reading. Whether two earlier payments shared an idempotency header is unknown, and that is not treated as safe.
+        Testnet only. The client authorizes one stored attempt through OutLayer. A stored attempt or provider success is not payment; only a matching final chain receipt is Paid.
       </p>
 
       <div className="flex flex-col gap-2">
@@ -270,6 +270,9 @@ function Create({ onCreated, onError }: { onCreated: (job: JobView) => void; onE
       <Field name="amount" label="Amount in NEAR" placeholder="0.1" inputMode="decimal" value={values.amount} error={errors.amount} onValue={(value) => update("amount", value)} />
       <Field name="expiry" label="Offer expires" type="date" value={values.expiry} error={errors.expiry} onValue={(value) => update("expiry", value)} />
       <Field name="wallet" label="Dedicated wallet address" mono value={values.wallet} error={errors.wallet} onValue={(value) => update("wallet", value)} />
+      <p className="text-base leading-relaxed text-muted">
+        Get a dedicated testnet wallet with <code>npm run outlayer:register</code>. Save its API credential outside the repo. Before funding, whitelist the recipient and cap spending in the OutLayer policy dashboard at <code>https://app.outlayer.ai/wallet?key=…</code>. The private key stays in OutLayer's TEE.
+      </p>
       <CheckValue
         name="walletCheck"
         value={values.wallet}
@@ -355,9 +358,12 @@ function JobCard({
         </div>
         {job.attempt && job.status !== "confirmed" ? (
           <p className="mt-3 text-base leading-relaxed text-ink">
-            This build stops here. One attempt is stored. MaintPay does not send it, and a stored attempt is not a payment.
+            One attempt is stored. Its status is {job.attempt.state}. It is not Paid until a final chain receipt is checked.
           </p>
         ) : null}
+        {job.status === "confirmed" && job.attempt?.txHash && (
+          <a href={`https://testnet.nearblocks.io/txns/${job.attempt.txHash}`} target="_blank" rel="noreferrer" className="mt-3 inline-flex min-h-11 items-center text-base text-sage underline">Paid — view the final chain transaction</a>
+        )}
         <JobLink id={job.id} />
         <p className="mt-3 text-base leading-relaxed text-muted">{job.criteria}</p>
         <ol className="mt-5 grid gap-2">
@@ -439,6 +445,11 @@ function Client({ job, onChange, onError }: { job: JobView; onChange: (job: JobV
   const deposit = useServerFn(checkDeposit);
   const claim = useServerFn(claimAttempt);
   const cancel = useServerFn(cancelJob);
+  const send = useServerFn(sendAttempt);
+  const refresh = useServerFn(refreshAttempt);
+  const confirmChain = useServerFn(confirmPayment);
+  const [apiKey, setApiKey] = useState("");
+  useEffect(() => setApiKey(""), [job.id]);
   const [pending, setPending] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<"claim" | "cancel" | null>(null);
   const [local, setLocal] = useState<string | null>(null);
@@ -490,7 +501,7 @@ function Client({ job, onChange, onError }: { job: JobView; onChange: (job: JobV
       {job.status === "accepted" && !job.attempt ? (
         confirm === "claim" ? (
           <button type="button" onClick={() => run("claim", () => claim({ data: { jobId: job.id } }))} className="inline-flex min-h-11 items-center justify-center rounded-sm bg-ink px-3 py-2 text-center text-base font-medium text-paper">
-            Store one attempt. Do not send it.
+            Store one attempt. Sending is a separate action.
           </button>
         ) : (
           <button type="button" onClick={() => setConfirm("claim")} className="inline-flex min-h-11 items-center justify-center rounded-sm bg-sage px-3 text-base font-medium text-paper">
@@ -499,9 +510,30 @@ function Client({ job, onChange, onError }: { job: JobView; onChange: (job: JobV
         )
       ) : null}
       {job.attempt ? (
-        <p className="text-base leading-relaxed text-warn">
-          The attempt is stored and nothing has been sent. This build does not send it.
-        </p>
+        <div className="flex flex-col gap-3">
+          <p className="text-base leading-relaxed text-ink">Payment state: {job.attempt.state}.</p>
+          {job.attempt.state === "sending" && <p className="text-base text-warn">Outcome unknown. Retrying re-sends the same key, which cannot pay twice.</p>}
+          {["claimed", "sending", "blocked", "read_original"].includes(job.attempt.state) && (
+            <>
+              <label className="text-base text-ink">
+                OutLayer API key (wk_…) — used once for this request, never stored
+                <input type="password" autoComplete="off" value={apiKey} onChange={(event) => setApiKey(event.target.value)} disabled={pending !== null} className="mt-1 min-h-11 w-full rounded-sm border border-line bg-paper px-3" />
+              </label>
+              <p className="text-base text-muted">OutLayer keeps the wallet private key in its TEE. This temporary API credential authorizes the request; it is cleared after the action.</p>
+              {["claimed", "sending"].includes(job.attempt.state) && (
+                <button type="button" disabled={pending !== null || !apiKey.trim()} onClick={() => { const key = apiKey; setApiKey(""); void run("send", () => send({ data: { jobId: job.id, apiKey: key } })); }} className="min-h-11 rounded-sm bg-sage px-3 text-base font-medium text-paper disabled:opacity-50">
+                  {pending === "send" ? "Sending…" : "Send payment"}
+                </button>
+              )}
+              {job.attempt.providerRequestId && ["blocked", "read_original", "sending"].includes(job.attempt.state) && (
+                <button type="button" disabled={pending !== null || !apiKey.trim()} onClick={() => { const key = apiKey; setApiKey(""); void run("refresh", () => refresh({ data: { jobId: job.id, apiKey: key } })); }} className="min-h-11 rounded-sm border border-line px-3 text-base font-medium disabled:opacity-50">Check status</button>
+              )}
+            </>
+          )}
+          {job.attempt.state === "awaiting_chain" && (
+            <button type="button" disabled={pending !== null} onClick={() => run("confirm", () => confirmChain({ data: { jobId: job.id } }))} className="min-h-11 rounded-sm border border-line px-3 text-base font-medium">Confirm on chain</button>
+          )}
+        </div>
       ) : null}
       {job.canCancel ? (
         confirm === "cancel" ? (

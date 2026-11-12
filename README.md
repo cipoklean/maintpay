@@ -1,8 +1,8 @@
 # MaintPay
 
-Agree the work. A different person accepts that exact commit. MaintPay can store one payment attempt. It does not send the money.
+Agree the work. A different person accepts that exact commit. The client authorizes one stored payment attempt through OutLayer testnet. Only a matching final NEAR chain receipt marks it Paid.
 
-This is a revocable reservation, not escrow. The client keeps the dedicated NEAR testnet wallet and can move the funds until a payment is actually submitted. This repository does not submit that payment.
+This is a revocable reservation, not escrow. The client controls the dedicated NEAR testnet wallet and can move the funds until a payment is actually submitted.
 
 ## What you can do
 
@@ -10,15 +10,16 @@ This is a revocable reservation, not escrow. The client keeps the dedicated NEAR
 - Copy a link for the contributor and the approver. Only those emails, plus the client, can open it.
 - The contributor links a public GitHub pull request. The approver accepts or rejects that exact commit.
 - The client can read a testnet balance, check a deposit, or cancel before an attempt exists.
-- After acceptance, the client can store one attempt. The app stops there. A stored attempt is not a payment.
+- After acceptance, the client stores one attempt, then pastes an OutLayer API credential per send/status action. The server verifies the credential controls the agreed wallet before sending the exact stored body and idempotency key.
+- Provider success is followed by final on-chain verification. Only the agreed signer, recipient, amount and transaction can mark the attempt and job confirmed.
 
 The public sample at `/sample` is an illustration. It is labeled “Illustrative example — no payment was made.”
 
 ## What this build does not do
 
-- It does not send NEAR.
+- It does not provide escrow or guarantee the client leaves funds available.
 - A balance reading, a stored attempt, or a provider success without a matching chain receipt is not paid.
-- Two earlier testnet transfers exist. Whether they used the same idempotency header is unknown. That is not treated as safe, and this app will not send another transfer to find out.
+- It does not infer payment from earlier unrelated testnet transfers or generate a replacement key for a stored attempt.
 
 ## Run it
 
@@ -58,9 +59,19 @@ npm run build
 
 ## Safety rules that stay in the code
 
-- The browser never holds the wallet key.
-- One attempt is stored before any send, and this build does not perform the send.
+- The browser never holds the wallet private key; it stays in OutLayer's TEE. The browser temporarily holds the spending API credential the client pastes per action. The app never persists or logs it, and clears the input after the action.
+- One immutable attempt body and idempotency key are stored before any send. A SHA-256 integrity check precedes sending.
 - Cancellation and a payment attempt cannot both win.
 - A changed or missing pull request holds the job.
 - A duplicate response is not a payment.
 - An unknown result is not a reason to create another attempt.
+
+## Send a testnet payment
+
+Run `npm run outlayer:register` once to get a dedicated wallet address and API credential. The script prints both and writes no files: save the credential securely outside the repository and logs. Never put it in a job, environment variable, URL shared with MaintPay, or chat. Set an OutLayer recipient whitelist and spending cap at `https://app.outlayer.ai/wallet?key=…`, substituting the credential locally in your browser. Fund the implicit account on NEAR testnet, allowing for the payment plus gas.
+
+Create the agreement with that wallet, check its inbound deposit, link a public non-draft PR, and accept as the separate approver. As the client, store the attempt, paste the API credential, and select **Send payment**. `OUTLAYER_API_BASE` defaults to `https://testnet-api.outlayer.ai`; this demo uses testnet only. No wallet API credential is configured on the server.
+
+If a send times out, state stays `sending`. **Send payment** re-sends the identical stored body with the same idempotency key, which OutLayer deduplicates by wallet/key. It never generates a new key. A duplicate response points to the original request, not proof of payment: use **Check status** with the credential. Policy approval, review, unknown status and wallet-busy responses block new sends. A failure remains `failed_unproven`; even when the provider says it never executed/submitted, this app does not reopen the attempt.
+
+Successful send/status responses automatically check a final NEAR RPC receipt. If finality is not available yet, use **Confirm on chain** (no credential needed). The **Paid** link leads to the confirmed testnet Nearblocks transaction. Other participants see read-only status.
