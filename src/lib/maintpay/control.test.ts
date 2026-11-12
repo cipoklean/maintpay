@@ -3,14 +3,21 @@ import { test } from "node:test";
 import { PGlite } from "@electric-sql/pglite";
 import {
   confirmReceipt,
+  assertCreate,
+  balanceReadProblem,
   decide,
+  depositStatus,
   evidenceProblem,
   interpretProvider,
   nearToYocto,
   prepareClaim,
+  preReviewProblem,
+  pullProblem,
   progress,
   transferBody,
   transferHttp,
+  termsHash,
+  verifiedEmailProblem,
   type Attempt,
   type GithubFacts,
   type Job,
@@ -275,4 +282,72 @@ test("an unpaid job ladder does not end on Confirmed", () => {
   assert.equal(names.at(-1), "Attempt stored");
   assert.equal(names.includes("Confirmed"), false);
   assert.equal(progress(job({ status: "confirmed" })).at(-1)?.name, "Confirmed");
+});
+
+test("only live pre-review jobs accept pull requests and deposits", () => {
+  for (const status of ["agreed", "funding_observed", "pr_ready", "in_review"] as const) {
+    const waiting = job({ status, decision: null });
+    assert.equal(preReviewProblem(waiting, NOW), null);
+    assert.equal(depositStatus(waiting, NOW), "in_review");
+    assert.equal(depositStatus({ ...waiting, headSha: null }, NOW), "funding_observed");
+  }
+  for (const status of ["cancelled", "held", "rejected", "accepted", "payment_in_flight", "confirmed"] as const) {
+    const ended = job({ status, decision: null });
+    assert.ok(preReviewProblem(ended, NOW));
+    assert.equal(depositStatus(ended, NOW), null);
+  }
+  const waiting = job({ status: "in_review", decision: null });
+  for (const expiresAt of [NOW, "", "invalid", "2020-01-01T00:00:00Z"]) {
+    assert.match(preReviewProblem({ ...waiting, expiresAt }, NOW) ?? "", /expired/);
+  }
+  assert.ok(preReviewProblem({ ...waiting, decision: job().decision }, NOW));
+  assert.ok(preReviewProblem(claimed(waiting, "body"), NOW));
+});
+
+test("linking refuses missing, draft and closed evidence but allows merged commits", () => {
+  assert.ok(pullProblem({ found: false }));
+  assert.ok(pullProblem({ found: true, sha: "" }));
+  assert.match(pullProblem({ ...facts, draft: true }) ?? "", /draft/);
+  assert.match(pullProblem({ ...facts, state: "closed" }) ?? "", /closed/);
+  assert.equal(pullProblem(facts), null);
+  assert.equal(pullProblem({ ...facts, state: "open" }), null);
+});
+
+test("acting requires a verified email and balance reads require the client", () => {
+  assert.equal(verifiedEmailProblem({ emailVerified: true }), null);
+  assert.equal(verifiedEmailProblem({ emailVerified: false }), "Verify your email before acting on a job.");
+  assert.ok(verifiedEmailProblem(undefined));
+  assert.equal(balanceReadProblem(job(), job().clientEmail), null);
+  for (const email of [job().workerEmail, job().approverEmail, "", "outsider@example.com"]) {
+    assert.match(balanceReadProblem(job(), email) ?? "", /Only the client/);
+  }
+});
+
+test("terms hash is canonical SHA-256 and binds expiry, wallet and field boundaries", async () => {
+  const base = job();
+  const hash = await termsHash(base);
+  assert.match(hash, /^[a-f0-9]{64}$/);
+  assert.equal(hash, await termsHash({ ...base, approverEmail: " APPROVER@example.com ", expiresAt: "2026-12-11T08:00:00Z" }));
+  for (const change of [{ expiresAt: NOW }, { walletAddress: "a".repeat(64) }, { task: "" }]) {
+    assert.notEqual(hash, await termsHash({ ...base, ...change }));
+  }
+  assert.notEqual(await termsHash({ ...base, task: "a|b", criteria: "c" }), await termsHash({ ...base, task: "a", criteria: "b|c" }));
+});
+
+test("recipients must be testnet accounts or implicit addresses", () => {
+  const base = { ...job(), now: NOW };
+  for (const recipient of [RECIPIENT, "worker.testnet", "sub.worker.testnet"]) {
+    assert.equal(assertCreate({ ...base, recipient }), null);
+  }
+  for (const recipient of ["", "worker.near", "worker", "testnet", "worker.testnet.evil", "bad!.testnet"]) {
+    assert.match(assertCreate({ ...base, recipient }) ?? "", /testnet recipient/);
+  }
+  assert.ok(assertCreate({ ...base, walletAddress: "worker.testnet" }));
+});
+
+test("expired review and closed accepted evidence cannot prepare an attempt", () => {
+  const waiting = job({ status: "in_review", decision: null, expiresAt: NOW });
+  assert.match(decide(waiting, { userId: "approver", email: waiting.approverEmail }, "accepted", NOW).error ?? "", /expired/);
+  assert.match(evidenceProblem(job(), { ...facts, state: "closed" }, NOW)?.reason ?? "", /closed/);
+  assert.ok("error" in prepareClaim(job(), { ...facts, state: "closed" }, NOW, AMOUNT));
 });

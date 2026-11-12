@@ -3,17 +3,22 @@ import { authMiddleware } from "@/lib/auth/middleware";
 import { getSql, type Sql } from "@/lib/db";
 import {
   assertCreate,
+  balanceReadProblem,
   canCancel,
   coversAmount,
   decide,
+  depositStatus,
   evidenceProblem,
   formatNear,
   nearToYocto,
   prepareClaim,
+  preReviewProblem,
+  pullProblem,
   progress,
   sha256,
   termsHash,
   transferBody,
+  verifiedEmailProblem,
   type GithubFacts,
   type Job,
   type JobStatus,
@@ -65,7 +70,9 @@ export interface JobView {
 const REPO = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 
 async function caller(sql: Sql, userId: string) {
-  const rows = await sql<{ email: string }>`select email from "user" where id = ${userId} limit 1`;
+  const rows = await sql<{ email: string; emailVerified: boolean }>`select email, "emailVerified" from "user" where id = ${userId} limit 1`;
+  const problem = verifiedEmailProblem(rows[0]);
+  if (problem) throw new Error(problem);
   const email = rows[0]?.email?.trim().toLowerCase();
   if (!email) throw new Error("Your account has no email, so it cannot act on a job.");
   return { userId, email };
@@ -286,7 +293,7 @@ export const createJob = createServerFn({ method: "POST" })
     const approver = data.approverEmail.trim().toLowerCase();
     const worker = data.workerEmail.trim().toLowerCase();
     const id = `MP-${crypto.randomUUID().slice(0, 8)}`;
-    const hash = termsHash({
+    const hash = await termsHash({
       repository,
       task,
       criteria,
@@ -294,8 +301,11 @@ export const createJob = createServerFn({ method: "POST" })
       workerEmail: worker,
       recipient: data.recipient.trim().toLowerCase(),
       amountYocto,
+      expiresAt: data.expiresAt,
+      walletAddress: data.walletAddress.trim().toLowerCase(),
     });
-    await sql`
+    try {
+      await sql`
       insert into jobs (
         id, client_user_id, client_email, approver_email, worker_email, repository, task, criteria,
         recipient, amount_yocto, expires_at, wallet_address, status, terms_hash
@@ -305,6 +315,12 @@ export const createJob = createServerFn({ method: "POST" })
         'agreed', ${hash}
       )
     `;
+    } catch (error) {
+      if ((error as { code?: string; constraint?: string }).code === "23505" && (error as { constraint?: string }).constraint === "jobs_active_wallet_unique") {
+        return { ok: false as const, error: "That wallet already has an active job." };
+      }
+      throw error;
+    }
     await sql`insert into job_events (job_id, title, detail) values (${id}, 'Agreed', 'The terms are fixed. The client can still move funds outside MaintPay.')`;
     const item = await present(sql, id, me.email);
     return { ok: true as const, job: item };
@@ -318,6 +334,8 @@ export const readBalance = createServerFn({ method: "POST" })
     const me = await caller(sql, context.userId);
     const job = await loadJob(sql, data.jobId);
     if (!job || !roleOf(job, me.email)) return { ok: false as const, error: "That job is not yours." };
+    const problem = balanceReadProblem(job, me.email);
+    if (problem) return { ok: false as const, error: problem };
     const balance = await readNativeBalance(job.walletAddress);
     if (!balance.ok) return { ok: false as const, error: balance.error };
     await sql`
@@ -339,18 +357,36 @@ export const checkDeposit = createServerFn({ method: "POST" })
     const me = await caller(sql, context.userId);
     const job = await loadJob(sql, data.jobId);
     if (!job || roleOf(job, me.email) !== "client") return { ok: false as const, error: "Only the client can record a deposit." };
+    const problem = preReviewProblem(job, new Date().toISOString());
+    if (problem) return { ok: false as const, error: problem };
     const checked = await verifyInbound((data.txHash ?? "").trim(), (data.sender ?? "").trim().toLowerCase(), job.walletAddress);
     if (!checked.ok) return { ok: false as const, error: checked.error };
     if (!coversAmount(checked.deposit, job.amountYocto)) {
       return { ok: false as const, error: "That transfer arrived, but it is less than the agreed amount." };
     }
-    await sql`
-      insert into funding (id, job_id, kind, amount_yocto, tx_hash, sender)
-      values (${crypto.randomUUID()}, ${job.id}, 'deposit', ${checked.deposit}, ${data.txHash.trim()}, ${data.sender.trim().toLowerCase()})
-    `;
-    const next = job.headSha && !job.decision ? "in_review" : job.status === "agreed" || job.status === "pr_ready" ? "funding_observed" : job.status;
-    if (next !== job.status && !job.attempt) {
-      await sql`update jobs set status = ${next}, version = version + 1 where id = ${job.id} and version = ${job.version}`;
+    const next = depositStatus(job, new Date().toISOString());
+    if (!next) return { ok: false as const, error: "The job changed. Read it again." };
+    try {
+      const inserted = await sql<{ id: string }>`
+        with updated as (
+          update jobs set status = ${next}, version = version + 1
+          where id = ${job.id} and version = ${job.version} and status = ${job.status}
+            and status in ('agreed', 'funding_observed', 'pr_ready', 'in_review')
+            and expires_at > now()
+            and not exists (select 1 from decisions where job_id = jobs.id)
+            and not exists (select 1 from attempts where job_id = jobs.id)
+          returning id
+        )
+        insert into funding (id, job_id, kind, amount_yocto, tx_hash, sender)
+        select ${crypto.randomUUID()}, id, 'deposit', ${checked.deposit}, ${data.txHash.trim()}, ${data.sender.trim().toLowerCase()}
+        from updated returning id
+      `;
+      if (!inserted.length) return { ok: false as const, error: "The job changed. Read it again." };
+    } catch (error) {
+      if ((error as { code?: string; constraint?: string }).code === "23505" && (error as { constraint?: string }).constraint === "funding_deposit_tx_unique") {
+        return { ok: false as const, error: "That deposit transaction has already been recorded." };
+      }
+      throw error;
     }
     await sql`
       insert into job_events (job_id, title, detail)
@@ -367,9 +403,12 @@ export const linkPull = createServerFn({ method: "POST" })
     const me = await caller(sql, context.userId);
     const job = await loadJob(sql, data.jobId);
     if (!job || roleOf(job, me.email) !== "contributor") return { ok: false as const, error: "Only the contributor can link the pull request." };
-    if (job.decision || job.attempt) return { ok: false as const, error: "The commit is already bound." };
+    const problem = preReviewProblem(job, new Date().toISOString());
+    if (problem) return { ok: false as const, error: problem };
     const loaded = await fetchPublicPull(data.url ?? "");
     if (!loaded.ok) return { ok: false as const, error: loaded.error };
+    const pullError = pullProblem({ found: true, sha: loaded.pull.headSha, state: loaded.pull.state, draft: loaded.pull.draft });
+    if (pullError) return { ok: false as const, error: pullError };
     if (loaded.pull.repository.toLowerCase() !== job.repository.toLowerCase()) {
       return { ok: false as const, error: "That pull request is not in the agreed repository." };
     }
@@ -384,6 +423,10 @@ export const linkPull = createServerFn({ method: "POST" })
         status = ${status},
         version = version + 1
       where id = ${job.id} and version = ${job.version}
+        and status in ('agreed', 'funding_observed', 'pr_ready', 'in_review')
+        and expires_at > now()
+        and not exists (select 1 from decisions where job_id = jobs.id)
+        and not exists (select 1 from attempts where job_id = jobs.id)
       returning id
     `;
     if (!updated.length) return { ok: false as const, error: "The job changed. Read it again." };
@@ -414,16 +457,20 @@ export const review = createServerFn({ method: "POST" })
     const decision = result.job.decision;
     if (!decision) return { ok: false as const, error: "The decision was not recorded." };
     const inserted = await sql<{ id: string }>`
+      with updated as (
+        update jobs set status = ${result.job.status}, version = version + 1
+        where id = ${job.id} and status = 'in_review' and version = ${job.version}
+          and expires_at > now()
+          and not exists (select 1 from decisions where job_id = jobs.id)
+          and not exists (select 1 from attempts where job_id = jobs.id)
+        returning id
+      )
       insert into decisions (id, job_id, approver_user_id, approver_email, decision, head_sha, terms_hash)
-      select ${crypto.randomUUID()}, ${job.id}, ${me.userId}, ${me.email}, ${data.decision}, ${decision.headSha}, ${decision.termsHash}
-      where not exists (select 1 from decisions where job_id = ${job.id})
+      select ${crypto.randomUUID()}, id, ${me.userId}, ${me.email}, ${data.decision}, ${decision.headSha}, ${decision.termsHash}
+      from updated
       returning id
     `;
-    if (!inserted.length) return { ok: false as const, error: "This snapshot already has a decision." };
-    await sql`
-      update jobs set status = ${result.job.status}, version = version + 1
-      where id = ${job.id} and version = ${job.version}
-    `;
+    if (!inserted.length) return { ok: false as const, error: "The job changed. Read it again." };
     await sql`
       insert into job_events (job_id, title, detail)
       values (

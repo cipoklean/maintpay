@@ -138,7 +138,7 @@ export function formatNear(yocto: string) {
   return frac ? `${whole}.${frac}` : whole;
 }
 
-export function termsHash(parts: {
+export async function termsHash(parts: {
   repository: string;
   task: string;
   criteria: string;
@@ -146,16 +146,50 @@ export function termsHash(parts: {
   workerEmail: string;
   recipient: string;
   amountYocto: string;
+  expiresAt: string;
+  walletAddress: string;
 }) {
-  return [
-    parts.repository,
-    parts.task,
-    parts.criteria,
-    parts.approverEmail.toLowerCase(),
-    parts.workerEmail.toLowerCase(),
-    parts.recipient,
-    parts.amountYocto,
-  ].join("|");
+  return sha256(JSON.stringify({
+    repository: parts.repository,
+    task: parts.task,
+    criteria: parts.criteria,
+    approverEmail: parts.approverEmail.trim().toLowerCase(),
+    workerEmail: parts.workerEmail.trim().toLowerCase(),
+    recipient: parts.recipient,
+    amountYocto: parts.amountYocto,
+    expiresAt: new Date(parts.expiresAt).toISOString(),
+    walletAddress: parts.walletAddress,
+  }));
+}
+
+export function verifiedEmailProblem(user: { emailVerified: boolean } | undefined): string | null {
+  return user?.emailVerified === true ? null : "Verify your email before acting on a job.";
+}
+
+export function balanceReadProblem(job: Job, email: string): string | null {
+  return email === job.clientEmail ? null : "Only the client can read the balance.";
+}
+
+export function preReviewProblem(job: Job, now: string): string | null {
+  if (!["agreed", "funding_observed", "pr_ready", "in_review"].includes(job.status) || job.decision || job.attempt) {
+    return "This job no longer accepts pull requests or deposits.";
+  }
+  if (!Number.isFinite(Date.parse(job.expiresAt)) || Date.parse(job.expiresAt) <= Date.parse(now)) {
+    return "This job expired. Create a new job.";
+  }
+  return null;
+}
+
+export function pullProblem(facts: GithubFacts): string | null {
+  if (!facts.found || !facts.sha) return "GitHub has no commit to link.";
+  if (facts.draft) return "The pull request is still a draft.";
+  if (facts.state === "closed") return "The pull request was closed and not merged.";
+  return null;
+}
+
+export function depositStatus(job: Job, now: string): JobStatus | null {
+  if (preReviewProblem(job, now)) return null;
+  return job.headSha ? "in_review" : "funding_observed";
 }
 
 export function transferBody(recipient: string, amountYocto: string) {
@@ -196,7 +230,7 @@ export function assertCreate(input: {
   if (approver === worker) return "The approver and the contributor must be different people.";
   if (approver === client) return "The approver must not be the person paying.";
   if (!HEX64.test(input.walletAddress)) return "The dedicated wallet must be a 64-character testnet address.";
-  if (!(HEX64.test(input.recipient) || ACCOUNT.test(input.recipient))) return "That recipient is not a NEAR account.";
+  if (!(HEX64.test(input.recipient) || (ACCOUNT.test(input.recipient) && input.recipient.endsWith(".testnet")))) return "Use a testnet recipient or a 64-character address.";
   if (!/^\d+$/.test(input.amountYocto) || input.amountYocto === "0") return "Enter an amount greater than zero.";
   if (Number.isNaN(Date.parse(input.expiresAt)) || Date.parse(input.expiresAt) <= Date.parse(input.now)) {
     return "The expiry must be in the future.";
@@ -212,6 +246,7 @@ export function decide(
 ): { job: Job; error?: string } {
   if (job.decision) return { job, error: "This snapshot already has a decision. It cannot be changed." };
   if (job.status !== "in_review" || !job.headSha) return { job, error: "Nothing is waiting for a decision." };
+  if (Date.parse(job.expiresAt) <= Date.parse(at)) return { job, error: "This job expired. Create a new job." };
   const email = actor.email.trim().toLowerCase();
   if (email === job.workerEmail) return { job, error: "The contributor cannot approve their own work." };
   if (email !== job.approverEmail) return { job, error: "Only the designated approver can decide." };
