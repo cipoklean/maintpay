@@ -18,6 +18,26 @@ import {
 const TEMPLATE_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT = join(TEMPLATE_ROOT, "scripts/brand-check.mjs");
 
+test("MaintPay ships a 1200x630 JPEG and passes its real brand gate", () => {
+  const card = readFileSync(join(TEMPLATE_ROOT, "public/og.jpg"));
+  assert.equal(card.readUInt16BE(0), 0xffd8);
+  assert.ok(card.length <= MAX_CARD_BYTES);
+  let dimensions;
+  for (let offset = 2; offset < card.length;) {
+    assert.equal(card[offset], 0xff);
+    const marker = card[offset + 1];
+    if (marker === 0xc0 || marker === 0xc2) {
+      dimensions = [card.readUInt16BE(offset + 7), card.readUInt16BE(offset + 5)];
+      break;
+    }
+    offset += 2 + card.readUInt16BE(offset + 2);
+  }
+  assert.deepEqual(dimensions, [1200, 630]);
+  const result = spawnSync(process.execPath, [SCRIPT], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(JSON.parse(result.stdout).warnings, 0);
+});
+
 const GAME_SITE = JSON.stringify({ title: "Wild Race", type: "x:game", card: "custom" });
 const UTILITY_SITE = JSON.stringify({ title: "Invoice" });
 const UTILITY_CUSTOM_SITE = JSON.stringify({ title: "Invoice", card: "custom" });
