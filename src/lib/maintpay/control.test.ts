@@ -276,12 +276,11 @@ test("cancel and claim cannot both win the same version", async () => {
   await db.close();
 });
 
-test("an unpaid job ladder does not end on Confirmed", () => {
-  const names = progress(job({ status: "agreed", decision: null, attempt: null })).map((step) => step.name);
-  assert.equal(names[0], "Agreed");
-  assert.equal(names.at(-1), "Attempt stored");
-  assert.equal(names.includes("Confirmed"), false);
-  assert.equal(progress(job({ status: "confirmed" })).at(-1)?.name, "Confirmed");
+test("the payment ladder shows Sent and Confirmed without claiming an unpaid job is paid", () => {
+  const steps = progress(job({ status: "agreed", decision: null, attempt: null }));
+  assert.equal(steps[0].name, "Agreed");
+  assert.deepEqual(steps.slice(-3), [{ name: "Attempt stored", done: false }, { name: "Sent", done: false }, { name: "Confirmed", done: false }]);
+  assert.deepEqual(progress(job({ status: "confirmed" })).at(-1), { name: "Confirmed", done: true });
 });
 
 test("only live pre-review jobs accept pull requests and deposits", () => {

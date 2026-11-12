@@ -1,6 +1,37 @@
+import type { ChainReceipt } from "./control.ts";
+
 export type WalletBalance = { ok: true; yocto: string; blockHeight: number } | { ok: false; error: string };
 
 const RPC = "https://rpc.testnet.near.org";
+
+export function parseChainReceipt(body: unknown, txHash: string): ChainReceipt {
+  if (!body || typeof body !== "object") return { ok: false };
+  const result = (body as { result?: Record<string, unknown> }).result;
+  if (!result || result.final_execution_status !== "FINAL") return { ok: false };
+  const tx = result.transaction as { hash?: unknown; signer_id?: unknown; receiver_id?: unknown; actions?: unknown } | undefined;
+  const status = result.status;
+  if (!tx || tx.hash !== txHash || !Array.isArray(tx.actions) || tx.actions.length !== 1) return { ok: false };
+  const deposit = tx.actions[0]?.Transfer?.deposit;
+  if (typeof tx.signer_id !== "string" || typeof tx.receiver_id !== "string" || typeof deposit !== "string" || !/^\d+$/.test(deposit)) return { ok: false };
+  return {
+    ok: true, signer: tx.signer_id, receiver: tx.receiver_id, deposit, txHash,
+    success: Boolean(status && typeof status === "object" && "SuccessValue" in status),
+  };
+}
+
+export async function fetchChainReceipt(txHash: string, sender: string): Promise<ChainReceipt> {
+  if (!/^[1-9A-HJ-NP-Za-km-z]{32,128}$/.test(txHash) || !/^[0-9a-f]{64}$/.test(sender)) return { ok: false };
+  try {
+    const response = await fetch(RPC, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: "maintpay", method: "EXPERIMENTAL_tx_status", params: { tx_hash: txHash, sender_account_id: sender, wait_until: "FINAL" } }),
+      redirect: "manual", signal: AbortSignal.timeout(15000),
+    });
+    return response.ok ? parseChainReceipt(await response.json(), txHash) : { ok: false };
+  } catch {
+    return { ok: false };
+  }
+}
 
 export async function readNativeBalance(accountId: string): Promise<WalletBalance> {
   if (!/^[0-9a-f]{64}$/.test(accountId)) return { ok: false, error: "That is not a dedicated wallet address." };

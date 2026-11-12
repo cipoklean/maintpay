@@ -21,6 +21,7 @@ export interface Attempt {
   idempotencyKey: string;
   state:
     | "claimed"
+    | "sending"
     | "read_original"
     | "blocked"
     | "failed_unproven"
@@ -95,20 +96,17 @@ export interface ChainReceipt {
   txHash?: string;
 }
 
-export type ProviderBody =
-  | {
-      http: 200;
-      error: "duplicate_idempotency_key";
-      requestId: string;
-      status: string;
-    }
-  | {
-      http: 200;
-      requestId: string;
-      status: "success" | "completed" | "processing" | "needs_review" | "failed" | "unknown";
-      txHash?: string | null;
-    }
-  | { http: number; error: string; requestId?: string };
+export interface ProviderBody {
+  http: number;
+  error?: string;
+  requestId?: string;
+  request_id?: string;
+  in_flight_request_id?: string;
+  status?: string;
+  txHash?: string | null;
+  tx_hash?: string | null;
+  result?: { tx_hash?: string; never_executed?: boolean; never_submitted?: boolean };
+}
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -328,72 +326,97 @@ export function interpretProvider(response: ProviderBody): {
   blocksRecovery: boolean;
   plain: string;
 } {
+  const requestId = response.request_id ?? response.requestId ?? response.in_flight_request_id ?? null;
+  const txHash = response.tx_hash ?? response.txHash ?? response.result?.tx_hash ?? null;
+  const status = ["success", "failed", "processing", "pending_approval", "needs_review"].includes(response.status ?? "") ? response.status! : "unknown";
   if ("error" in response && response.error === "duplicate_idempotency_key") {
     return {
       state: "read_original",
       paid: false,
-      requestId: response.requestId ?? null,
+      requestId,
       error: "duplicate_idempotency_key",
-      status: "status" in response ? response.status : null,
+      status,
       txHash: null,
       blocksRetry: true,
       blocksRecovery: true,
       plain: "The provider pointed at an earlier request. That is not a payment. Read the original request.",
     };
   }
-  if (!("status" in response) || response.http !== 200) {
+  if (response.http !== 200 || (response.error && response.error !== "failed")) {
     return {
       state: "blocked",
       paid: false,
-      requestId: "requestId" in response ? (response.requestId ?? null) : null,
-      error: "error" in response ? response.error : "unknown",
-      status: null,
+      requestId,
+      error: response.error === "wallet_busy" ? "wallet_busy" : "unknown",
+      status: "unknown",
       txHash: null,
       blocksRetry: true,
       blocksRecovery: true,
       plain: "The outcome is unknown. Do not send another payment, and do not treat the money as returned.",
     };
   }
-  if (response.status === "processing" || response.status === "needs_review" || response.status === "unknown") {
+  if (status !== "success" && status !== "failed") {
     return {
       state: "blocked",
       paid: false,
-      requestId: response.requestId,
+      requestId,
       error: null,
-      status: response.status,
-      txHash: "txHash" in response ? (response.txHash ?? null) : null,
+      status,
+      txHash,
       blocksRetry: true,
       blocksRecovery: true,
       plain:
-        response.status === "needs_review"
+        status === "pending_approval"
+          ? "The wallet requires approval. Complete the policy approval before checking status."
+          : status === "needs_review"
           ? "The provider is holding this for review. Do not start another payment or a recovery."
           : "The payment is still in flight. Do not start another one, and do not recover the funds.",
     };
   }
-  if (response.status === "failed") {
+  if (status === "failed") {
     return {
       state: "failed_unproven",
       paid: false,
-      requestId: response.requestId,
+      requestId,
       error: "failed",
       status: "failed",
-      txHash: "txHash" in response ? (response.txHash ?? null) : null,
+      txHash,
       blocksRetry: true,
       blocksRecovery: true,
-      plain: "The provider reported a failure. That does not prove the money stayed put.",
+      plain: response.result?.never_executed === true || response.result?.never_submitted === true
+        ? "The provider reports nothing moved. This attempt remains closed; do not create another key for it."
+        : "The provider reported a failure. That does not prove the money stayed put.",
     };
   }
   return {
-    state: "awaiting_chain",
+    state: txHash ? "awaiting_chain" : "blocked",
     paid: false,
-    requestId: response.requestId,
+    requestId,
     error: null,
-    status: response.status,
-    txHash: "txHash" in response ? (response.txHash ?? null) : null,
+    status,
+    txHash,
     blocksRetry: true,
     blocksRecovery: true,
-    plain: "The provider reported success. It is not paid until the chain receipt matches the agreed recipient and amount.",
+    plain: txHash
+      ? "The provider reported success. It is not paid until the chain receipt matches the agreed recipient and amount."
+      : "The provider reported success without a transaction hash. Check the original request; this is not paid.",
   };
+}
+
+export const UNKNOWN_SEND = "Outcome unknown. Retrying re-sends the same key, which cannot pay twice.";
+
+export function sendAttemptProblem(job: Job): string | null {
+  if (job.status !== "payment_in_flight" || !job.attempt || !["claimed", "sending"].includes(job.attempt.state)) {
+    return "Only a claimed or sending attempt can be sent. Never create another key.";
+  }
+  if (job.attempt.walletAddress !== job.walletAddress) return "The stored attempt wallet does not match the job.";
+  return null;
+}
+
+export function refreshAttemptProblem(job: Job): string | null {
+  return job.status === "payment_in_flight" && job.attempt &&
+    ["blocked", "read_original", "sending"].includes(job.attempt.state) && job.attempt.providerRequestId
+    ? null : "This attempt has no provider request to check.";
 }
 
 export function confirmReceipt(job: Job, receipt: ChainReceipt): { job: Job; error?: string; createdAttempt: false } {
@@ -431,7 +454,7 @@ export function canCancel(job: Job) {
   return !job.attempt && ["agreed", "funding_observed", "pr_ready", "in_review", "accepted", "rejected", "held"].includes(job.status);
 }
 
-export type StepName = "Agreed" | "Funding observed" | "PR ready" | "Human review" | "Attempt stored" | "Confirmed";
+export type StepName = "Agreed" | "Funding observed" | "PR ready" | "Human review" | "Attempt stored" | "Sent" | "Confirmed";
 
 export function progress(job: Job): { name: StepName; done: boolean }[] {
   const funded = job.deposits.some((row) => coversAmount(row.amountYocto, job.amountYocto));
@@ -445,7 +468,8 @@ export function progress(job: Job): { name: StepName; done: boolean }[] {
     { name: "PR ready", done: pr },
     { name: "Human review", done: reviewed },
     { name: "Attempt stored", done: flying },
+    { name: "Sent", done: Boolean(job.attempt && (job.attempt.state === "awaiting_chain" || job.attempt.state === "confirmed" || (job.attempt.providerRequestId && job.attempt.providerError !== "wallet_busy"))) },
+    { name: "Confirmed", done: confirmed },
   ];
-  if (confirmed) steps.push({ name: "Confirmed", done: true });
   return steps;
 }

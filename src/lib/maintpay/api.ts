@@ -5,19 +5,24 @@ import {
   assertCreate,
   balanceReadProblem,
   canCancel,
+  confirmReceipt,
   coversAmount,
   decide,
   depositStatus,
   evidenceProblem,
   formatNear,
+  interpretProvider,
   nearToYocto,
   prepareClaim,
   preReviewProblem,
   pullProblem,
   progress,
+  refreshAttemptProblem,
+  sendAttemptProblem,
   sha256,
   termsHash,
   transferBody,
+  UNKNOWN_SEND,
   verifiedEmailProblem,
   type GithubFacts,
   type Job,
@@ -25,7 +30,9 @@ import {
 } from "./control";
 import { isJobId } from "./job-link";
 import { fetchPublicPull } from "./github";
-import { readNativeBalance, verifyInbound } from "./near";
+import { fetchChainReceipt, readNativeBalance, verifyInbound } from "./near";
+import { checkWalletKey, requestOutlayer } from "./outlayer";
+import { beginSending, persistConfirmation, persistProvider } from "./payment-store";
 
 export interface JobView {
   id: string;
@@ -533,6 +540,65 @@ export const claimAttempt = createServerFn({ method: "POST" })
       values (${job.id}, 'Attempt stored', 'The transfer body and header key are stored. Nothing has been sent.')
     `;
     return { ok: true as const, job: await present(sql, job.id, me.email) };
+  });
+
+async function confirmStoredPayment(sql: Sql, job: Job): Promise<string | null> {
+  if (!job.attempt?.txHash || job.attempt.state !== "awaiting_chain") return "This attempt is not awaiting a chain receipt.";
+  const receipt = await fetchChainReceipt(job.attempt.txHash, job.walletAddress);
+  const result = confirmReceipt(job, receipt);
+  if (result.error) return result.error;
+  return await persistConfirmation(sql, job) ? null : "The job changed. Read it again.";
+}
+
+async function performAttempt(jobId: string, apiKey: string, userId: string, action: "send" | "refresh") {
+  const sql = await getSql();
+  const me = await caller(sql, userId);
+  let job = await loadJob(sql, jobId);
+  if (!job || roleOf(job, me.email) !== "client") return { ok: false as const, error: "Only the client can send or check a payment." };
+  const problem = action === "send" ? sendAttemptProblem(job) : refreshAttemptProblem(job);
+  if (problem) return { ok: false as const, error: problem };
+  if (await sha256(job.attempt!.requestBody) !== job.attempt!.bodyHash) return { ok: false as const, error: "The stored transfer body failed its integrity check. Nothing was sent." };
+  const keyProblem = await checkWalletKey(apiKey, job.walletAddress);
+  if (keyProblem) return { ok: false as const, error: keyProblem };
+  if (action === "send") {
+    if (!await beginSending(sql, job)) return { ok: false as const, error: "The job changed. Read it again." };
+    job = { ...job, version: job.version + 1, attempt: { ...job.attempt!, state: "sending" } };
+  }
+  const response = await requestOutlayer(apiKey, job.attempt!, action);
+  const read = response ? interpretProvider(response) : {
+    ...interpretProvider({ http: 0 }), state: action === "send" ? "sending" as const : job.attempt!.state,
+    plain: action === "send" ? UNKNOWN_SEND : "Status unknown. Check the original request again; do not create another payment.",
+  };
+  if (!await persistProvider(sql, job, read)) return { ok: false as const, error: "The job changed. Read it again.", job: await present(sql, job.id, me.email) };
+  const current = await loadJob(sql, job.id);
+  const confirmationError = current?.attempt?.state === "awaiting_chain" ? await confirmStoredPayment(sql, current) : null;
+  return {
+    ok: Boolean(response) && !confirmationError,
+    error: confirmationError ?? (response ? undefined : read.plain),
+    job: await present(sql, job.id, me.email),
+  };
+}
+
+export const sendAttempt = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((input: { jobId: string; apiKey: string }) => ({ jobId: input.jobId, apiKey: typeof input.apiKey === "string" ? input.apiKey.trim() : "" }))
+  .handler(async ({ data, context }) => performAttempt(data.jobId, data.apiKey, context.userId, "send"));
+
+export const refreshAttempt = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((input: { jobId: string; apiKey: string }) => ({ jobId: input.jobId, apiKey: typeof input.apiKey === "string" ? input.apiKey.trim() : "" }))
+  .handler(async ({ data, context }) => performAttempt(data.jobId, data.apiKey, context.userId, "refresh"));
+
+export const confirmPayment = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((input: { jobId: string }) => input)
+  .handler(async ({ data, context }) => {
+    const sql = await getSql();
+    const me = await caller(sql, context.userId);
+    const job = await loadJob(sql, data.jobId);
+    if (!job || roleOf(job, me.email) !== "client") return { ok: false as const, error: "Only the client can confirm a payment." };
+    const error = await confirmStoredPayment(sql, job);
+    return { ok: !error, error: error ?? undefined, job: await present(sql, job.id, me.email) };
   });
 
 export const cancelJob = createServerFn({ method: "POST" })
