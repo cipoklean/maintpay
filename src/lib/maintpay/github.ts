@@ -1,4 +1,4 @@
-import { parsePullRequestUrl } from "./pr-url";
+import { parsePullRequestUrl } from "./pr-url.ts";
 
 export interface PublicPullRequest {
   repository: string;
@@ -30,6 +30,7 @@ export async function fetchPublicPull(url: string): Promise<LoadPullResult> {
         Accept: "application/vnd.github+json",
         "User-Agent": "MaintPay",
         "X-GitHub-Api-Version": "2022-11-28",
+        ...(process.env.GITHUB_TOKEN ? { Authorization: `Bearer ${process.env.GITHUB_TOKEN}` } : {}),
       },
       redirect: "manual",
       signal: AbortSignal.timeout(8000),
@@ -68,8 +69,10 @@ function readPull(body: unknown, ref: { owner: string; repo: string; number: num
   const sha = typeof head?.sha === "string" ? head.sha.toLowerCase() : "";
   const repository = typeof baseRepo?.full_name === "string" ? baseRepo.full_name : "";
   const author = typeof user?.login === "string" ? user.login : "";
+  // eslint-disable-next-line no-control-regex -- Strip terminal control characters from untrusted GitHub text.
   const title = typeof row.title === "string" ? row.title.replace(/[\u0000-\u001f]/g, "").trim() : "";
   const htmlUrl = typeof row.html_url === "string" ? row.html_url : "";
+  // eslint-disable-next-line no-control-regex -- Strip terminal control characters from untrusted GitHub text.
   const branch = typeof head?.ref === "string" ? head.ref.replace(/[\u0000-\u001f]/g, "").trim() : "";
   const number = row.number;
 

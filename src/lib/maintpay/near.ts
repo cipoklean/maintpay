@@ -64,7 +64,7 @@ export async function verifyInbound(
         jsonrpc: "2.0",
         id: "maintpay",
         method: "EXPERIMENTAL_tx_status",
-        params: { tx_hash: txHash, sender_account_id: sender, wait_until: "NONE" },
+        params: { tx_hash: txHash, sender_account_id: sender, wait_until: "FINAL" },
       }),
       redirect: "manual",
       signal: AbortSignal.timeout(8000),
