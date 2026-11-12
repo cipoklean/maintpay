@@ -2,7 +2,7 @@
 
 **Review-gated contractor payouts on NEAR testnet: one stored attempt, one idempotency key, and a final chain receipt before “Paid.”**
 
-Live demo: (coming)
+Live demo: https://maintpay.vercel.app
 
 Demo video: (coming)
 
@@ -51,6 +51,12 @@ References: [custody API](https://skills.outlayer.ai/agent-custody/SKILL.md), [i
 | Spending limits | **Recommended external OutLayer policy**, not a MaintPay policy engine. The owner configures a recipient whitelist, cap and approvals. MaintPay submits the agreed recipient/amount and surfaces blocks; it does not install or audit policy. |
 
 ## Quickstart for judges
+
+### Try the hosted demo
+
+Open [maintpay.vercel.app/login](https://maintpay.vercel.app/login). The three demo accounts in the table below are seeded there with the documented default password. Use separate browser profiles for the client, contributor and approver, then follow the payout walkthrough below. Bring your own dedicated, funded **OutLayer testnet** wallet; no spending credential is supplied with the demo.
+
+The hosted app runs on Vercel with Neon Postgres. Hosted signup explicitly sets `MAINTPAY_DEMO_AUTO_VERIFY=true`, so new emails are automatically marked verified **for this demo only**, without proof of ownership. Demo accounts are shared: do not enter sensitive information or treat this as production identity security. Wallet credentials remain transient per request. Persistent storage does not make the reservation escrow.
 
 ### Start and sign in
 
@@ -126,7 +132,24 @@ Job `MP-9e773b90`, OutLayer request `c4cbe7cc-0b44-4432-9bc8-82538c8aa3ed`, sent
 - RPC: `final_execution_status: FINAL`, `status: {"SuccessValue":""}`.
 - Authenticated RPC also refused a wrong-wallet key, contributor send and second send after confirmation. Timeout recovery/concurrent initial sends were tested with mocks/PGlite, not a deliberately interrupted real payment.
 
-This is historical evidence, not a seeded job or reusable deposit/credential. A fresh local database will not contain that job. Payment UI controls remain visually unverified; the real flow was exercised through authenticated server-function RPC.
+This is historical local-flow evidence, not a seeded job or reusable deposit/credential. A fresh local database will not contain that job. Payment UI controls remain visually unverified; the real flow was exercised through authenticated server-function RPC.
+
+### Hosted Vercel + Neon end-to-end evidence
+
+The same flow was executed through authenticated RPC at `https://maintpay.vercel.app`, with that exact Origin, using the three seeded accounts:
+
+`agreed → funding_observed → in_review → accepted → payment_in_flight (claimed) → confirmed`.
+
+Hosted job [`MP-b8c4c2b5`](https://maintpay.vercel.app/job/MP-b8c4c2b5), OutLayer request `d05a3755-fb4f-4b9a-9140-8f2c3c350315`, sent **one 0.01 NEAR testnet transfer**:
+
+**[Hosted-flow confirmed transaction: HBLyVKctmBv8EiJbdYRTV7mpJnsTKJ6s83sdwguJctzP](https://testnet.nearblocks.io/txns/HBLyVKctmBv8EiJbdYRTV7mpJnsTKJ6s83sdwguJctzP)**
+
+- Wallet balance before sending: `89955363487500000000000` yoctoNEAR (approximately 0.08995536 NEAR), sufficient for 0.01 NEAR plus gas.
+- The existing 0.1 NEAR inbound transfer `3YVKCcTbertT6vCqJXoo6tRRRcKTTVh235WKixJr4ghg`, from `maintpay-demo-1794520299803.testnet`, was valid for this wallet and recorded in the fresh hosted database. No new faucet transfer was needed; receipt uniqueness is enforced within each database.
+- Signer: `b4b8d40eb90881d5e41568b255c3f347d954e7cf6876fdac64b9c4c6b638013d`; receiver: `faucet.accord-v2.testnet`; one native Transfer of `10000000000000000000000` yoctoNEAR.
+- All workflow calls returned HTTP 200 and `ok=true`. Sending automatically confirmed the attempt and job; an independent testnet RPC check returned `FINAL` and `{"SuccessValue":""}` with the exact signer, receiver and amount.
+
+This was a newly authorized job/payment, not recovery of the earlier confirmed local payment. No Vercel or Neon settings were changed during the check.
 
 ## Configuration
 
@@ -191,6 +214,9 @@ The initial commit combines scaffold files and MaintPay v1; there is **no separa
 | [`ffd9882`](https://github.com/cipoklean/maintpay/commit/ffd9882) | Judge setup and idempotent user seeding. |
 | [`aa7a5bb`](https://github.com/cipoklean/maintpay/commit/aa7a5bb) | Immutable sending/recovery and atomic FINAL receipt confirmation. |
 | [`55705ae`](https://github.com/cipoklean/maintpay/commit/55705ae) | Payment controls, wallet registration and custody documentation. |
+| [`314a955`](https://github.com/cipoklean/maintpay/commit/314a955) | Judge walkthrough, hackathon provenance and MIT license. |
+| [`c85cc04`](https://github.com/cipoklean/maintpay/commit/c85cc04) | Custom social card, mandatory brand check and isolated template fixtures. |
+| [`782b301`](https://github.com/cipoklean/maintpay/commit/782b301) | Trust Vercel production/deployment origins for hosted sign-in. |
 
 [Diff after the combined initial snapshot](https://github.com/cipoklean/maintpay/compare/9fa893b...55705ae). Inspect initial `src/lib/maintpay/`, `src/components/maintpay/` and `migrations/0002_maintpay.sql` for v1. The submission-package update adds this README, MIT license and share card; `git log --oneline` identifies it. The app does not submit hackathon applications.
 
@@ -198,7 +224,7 @@ The initial commit combines scaffold files and MaintPay v1; there is **no separa
 
 - Testnet/native NEAR only: no mainnet, stablecoin payroll, cross-chain settlement, escrow, arbitration or guaranteed funding.
 - PGlite is disposable: losing the database loses the app's recovery record. Use durable Postgres/backups before real service use. A fresh database is not a safe payment retry.
-- No real verification-email sender is configured. No hosted demo is published here yet; an isolated hosted judge demo would need explicit demo auto-verification for arbitrary emails. Never enable that shortcut for real users.
+- No real verification-email sender is configured. The hosted judge demo explicitly auto-verifies signup emails and shares seeded accounts; this is not proof of ownership. Never enable that shortcut for real users.
 - OutLayer policies are external owner controls. MaintPay does not enforce a global budget, manage approvals, verify TEE attestation or stop spending elsewhere.
 - GitHub is rechecked at claim, not continuously or again at send. Contributor GitHub identity is not bound to email; a PR can be relinked before a decision.
 - Unknown/review/failed states require reconciliation, not replacement attempts. No background polling/retry worker or account recovery.
