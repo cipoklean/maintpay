@@ -19,6 +19,11 @@ export function safeReturnPath(value: string | null | undefined) {
   return "/";
 }
 
+export function emailLoginSearch(value?: string | null): { returnTo?: string } {
+  const back = safeReturnPath(value);
+  return back === "/" ? {} : { returnTo: back };
+}
+
 /** The link that is shown is the link that is copied. No query or hash. */
 export function shareJobUrl(id: string, page: { origin: string; hostname: string; pathname: string }) {
   const prefix = previewPathPrefix(page.hostname, page.pathname) ?? "";

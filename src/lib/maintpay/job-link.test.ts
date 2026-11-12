@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { isJobId, jobPath, safeReturnPath, shareJobUrl } from "./job-link.ts";
+import { emailLoginSearch, isJobId, jobPath, safeReturnPath, shareJobUrl } from "./job-link.ts";
 
 test("a job link accepts only an agreement id", () => {
   assert.equal(isJobId("MP-1042"), true);
@@ -28,4 +28,14 @@ test("sign-in may return only to the dashboard or that agreement", () => {
   assert.equal(safeReturnPath("//evil.example"), "/");
   assert.equal(safeReturnPath("/job/MP-a1b2c3d4?next=https://evil.example"), "/");
   assert.equal(safeReturnPath("/login"), "/");
+});
+
+test("email login preserves only a validated agreement return path", () => {
+  const path = "/job/MP-a1b2c3d4";
+  const search = emailLoginSearch(path);
+  assert.deepEqual(search, { returnTo: path });
+  assert.equal(safeReturnPath(new URLSearchParams(new URLSearchParams(search).toString()).get("returnTo")), path);
+  for (const value of [undefined, null, "", "/", "/login", "//evil.example", "https://evil.example", "/job/MP-a1b2c3d4?next=//evil.example", "/job/MP-a1b2c3d4#secret", "/\\evil.example", "/job/not-a-job"]) {
+    assert.deepEqual(emailLoginSearch(value), {});
+  }
 });

@@ -1,5 +1,6 @@
 import { Link, createFileRoute, useRouterState } from "@tanstack/react-router";
 import { FocusedJob } from "@/components/maintpay/handoff";
+import { EmailSignInLink } from "@/components/maintpay/email-sign-in-link";
 import { NotFoundPage } from "@/components/maintpay/not-found";
 import { SignInFailedPanel } from "@/components/maintpay/sign-in-failed";
 import { GROK_PROVIDERS, authEnabled, signIn } from "@/lib/auth/client";
@@ -57,6 +58,7 @@ function JobSignIn({ jobId }: { jobId: string }) {
       </div>
       {authEnabled ? (
         <div className="flex flex-col gap-3">
+          <EmailSignInLink returnTo={back} />
           {GROK_PROVIDERS.map((provider) => (
             <button
               key={provider.providerId}

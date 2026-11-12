@@ -18,6 +18,7 @@ import {
   transferHttp,
   termsHash,
   verifiedEmailProblem,
+  terminalJobMessage,
   type Attempt,
   type GithubFacts,
   type Job,
@@ -301,6 +302,28 @@ test("only live pre-review jobs accept pull requests and deposits", () => {
   }
   assert.ok(preReviewProblem({ ...waiting, decision: job().decision }, NOW));
   assert.ok(preReviewProblem(claimed(waiting, "body"), NOW));
+});
+
+test("UI views use the same pre-review guard for open, closed and expired jobs", () => {
+  for (const status of ["agreed", "funding_observed", "pr_ready", "in_review"] as const) {
+    assert.equal(preReviewProblem({ status, expiresAt: LATER, attempt: null }, NOW), null);
+  }
+  for (const status of ["cancelled", "confirmed", "rejected", "accepted", "held", "payment_in_flight"] as const) {
+    assert.match(preReviewProblem({ status, expiresAt: LATER, attempt: null }, NOW) ?? "", /no longer accepts/);
+  }
+  assert.match(preReviewProblem({ status: "agreed", expiresAt: LATER, attempt: { state: "claimed" } }, NOW) ?? "", /no longer accepts/);
+  for (const expiresAt of [NOW, "", "invalid"]) {
+    assert.match(preReviewProblem({ status: "agreed", expiresAt, attempt: null }, NOW) ?? "", /expired/);
+  }
+});
+
+test("terminal state copy never promises a future payment", () => {
+  assert.equal(terminalJobMessage("cancelled"), "Cancelled — MaintPay will not pay this job.");
+  assert.equal(terminalJobMessage("rejected"), "Rejected — MaintPay will not pay this job.");
+  assert.equal(terminalJobMessage("confirmed"), "Confirmed — Paid. A matching final chain receipt was checked.");
+  for (const status of ["agreed", "funding_observed", "pr_ready", "in_review", "accepted", "held", "payment_in_flight"] as const) {
+    assert.equal(terminalJobMessage(status), null);
+  }
 });
 
 test("linking refuses missing, draft and closed evidence but allows merged commits", () => {

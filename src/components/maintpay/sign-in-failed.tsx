@@ -1,4 +1,5 @@
 import { Link } from "@tanstack/react-router";
+import { EmailSignInLink } from "./email-sign-in-link";
 import { GROK_PROVIDERS, authEnabled, signIn } from "@/lib/auth/client";
 import { safeReturnPath } from "@/lib/maintpay/job-link";
 
@@ -16,6 +17,7 @@ export function SignInFailedPanel({ code, returnTo = "/" }: { code?: string | nu
       </div>
       {authEnabled ? (
         <div className="flex flex-col gap-3">
+          <EmailSignInLink returnTo={back} />
           {GROK_PROVIDERS.map((provider) => (
             <button
               key={provider.providerId}

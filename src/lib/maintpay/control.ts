@@ -168,13 +168,20 @@ export function balanceReadProblem(job: Job, email: string): string | null {
   return email === job.clientEmail ? null : "Only the client can read the balance.";
 }
 
-export function preReviewProblem(job: Job, now: string): string | null {
+export function preReviewProblem(job: Pick<Job, "status" | "expiresAt"> & { decision?: unknown; attempt?: unknown }, now: string): string | null {
   if (!["agreed", "funding_observed", "pr_ready", "in_review"].includes(job.status) || job.decision || job.attempt) {
     return "This job no longer accepts pull requests or deposits.";
   }
   if (!Number.isFinite(Date.parse(job.expiresAt)) || Date.parse(job.expiresAt) <= Date.parse(now)) {
     return "This job expired. Create a new job.";
   }
+  return null;
+}
+
+export function terminalJobMessage(status: JobStatus): string | null {
+  if (status === "cancelled") return "Cancelled — MaintPay will not pay this job.";
+  if (status === "rejected") return "Rejected — MaintPay will not pay this job.";
+  if (status === "confirmed") return "Confirmed — Paid. A matching final chain receipt was checked.";
   return null;
 }
 

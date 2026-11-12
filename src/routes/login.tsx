@@ -3,10 +3,16 @@ import { useState, type FormEvent } from "react";
 import { SignInFailedPanel } from "@/components/maintpay/sign-in-failed";
 import { GROK_PROVIDERS, authClient, authEnabled, signIn } from "@/lib/auth/client";
 import { emailAndPasswordEnabled } from "@/lib/auth/email-password";
+import { emailLoginSearch, safeReturnPath } from "@/lib/maintpay/job-link";
 
-export const Route = createFileRoute("/login")({ component: Login });
+export const Route = createFileRoute("/login")({
+  component: Login,
+  validateSearch: (search: Record<string, unknown>) => emailLoginSearch(typeof search.returnTo === "string" ? search.returnTo : null),
+});
 
 function Login() {
+  const { returnTo } = Route.useSearch();
+  const back = safeReturnPath(returnTo);
   const [signUp, setSignUp] = useState(false);
   const [pending, setPending] = useState(false);
   const [message, setMessage] = useState("");
@@ -22,7 +28,7 @@ function Login() {
         ? await authClient.signUp.email({ email, password, name: email.split("@")[0] })
         : await authClient.signIn.email({ email, password });
       if (result.error) setMessage(result.error.message ?? "Sign-in failed. Try again.");
-      else window.location.assign("/");
+      else window.location.assign(back);
     } catch {
       setMessage("Could not reach sign-in. Try again.");
     } finally {
@@ -31,7 +37,7 @@ function Login() {
   }
   const searchStr = useRouterState({ select: (state) => state.location.searchStr });
   const error = new URLSearchParams(searchStr).get("error");
-  if (error) return <SignInFailedPanel code={error} />;
+  if (error) return <SignInFailedPanel code={error} returnTo={back} />;
   return (
     <main className="mx-auto flex min-h-screen w-full min-w-0 flex-col justify-center gap-6 px-4 py-10 xl:max-w-xl">
       <div>
@@ -67,8 +73,8 @@ function Login() {
               key={provider.providerId}
               type="button"
               onClick={() => {
-                void signIn(provider.providerId, { callbackURL: "/", errorCallbackURL: "/sign-in-failed" }).catch(() => {
-                  window.location.assign("/sign-in-failed");
+                void signIn(provider.providerId, { callbackURL: back, errorCallbackURL: back === "/" ? "/sign-in-failed" : back }).catch(() => {
+                  window.location.assign(back === "/" ? "/sign-in-failed" : `${back}?error=cancelled`);
                 });
               }}
               className="inline-flex min-h-11 items-center justify-center rounded-sm bg-sage px-4 text-base font-medium text-paper"

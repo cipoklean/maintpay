@@ -7,6 +7,7 @@ import { AGREEMENT_FOCUS_ORDER, checkReading, validateAgreement } from "@/lib/ma
 import { cancelJob, checkDeposit, claimAttempt, confirmPayment, createJob, getJob, linkPull, listJobs, readBalance, refreshAttempt, review, sendAttempt, type JobView } from "@/lib/maintpay/api";
 import { shareJobUrl } from "@/lib/maintpay/job-link";
 import { isIllustrativeJob, SAMPLE_BANNER } from "@/lib/maintpay/sample";
+import { preReviewProblem, terminalJobMessage } from "@/lib/maintpay/control";
 
 const ROLES = [
   { id: "client", label: "Client" },
@@ -441,6 +442,8 @@ function RolePane({
 }
 
 function Client({ job, onChange, onError }: { job: JobView; onChange: (job: JobView) => void; onError: (message: string) => void }) {
+  const preReview = preReviewProblem(job, new Date().toISOString());
+  const terminalMessage = terminalJobMessage(job.status);
   const balance = useServerFn(readBalance);
   const deposit = useServerFn(checkDeposit);
   const claim = useServerFn(claimAttempt);
@@ -471,13 +474,13 @@ function Client({ job, onChange, onError }: { job: JobView; onChange: (job: JobV
 
   return (
     <div className="flex min-w-0 flex-col gap-4 rounded-md border border-line bg-card p-4">
-      <h2 className="font-display text-2xl">Your promise</h2>
+      <h2 className="font-display text-2xl">{terminalMessage ? "This agreement" : "Your promise"}</h2>
       <p className="text-base leading-relaxed text-muted">
-        Pay {job.amountLabel} to the agreed account after the approver accepts the exact commit. You can still move the money yourself. This is not escrow.
+        {terminalMessage ?? `Pay ${job.amountLabel} to the agreed account after the approver accepts the exact commit. You can still move the money yourself. This is not escrow.`}
       </p>
       <p className="text-base leading-relaxed">
         Latest reading: {job.snapshotLabel ?? "not read yet"}.
-        {job.gasLabel ? ` About ${job.gasLabel} would remain after the payment, and that is only a snapshot.` : " A reading is not a deposit."}
+        {!terminalMessage && (job.gasLabel ? ` About ${job.gasLabel} would remain after the payment, and that is only a snapshot.` : " A reading is not a deposit.")}
         {job.depositLabel ? ` A deposit of ${job.depositLabel} was checked.` : " No deposit has been checked."}
       </p>
       <button
@@ -488,16 +491,18 @@ function Client({ job, onChange, onError }: { job: JobView; onChange: (job: JobV
       >
         {pending === "read" ? "Reading…" : "Read the wallet"}
       </button>
-      <DepositForm
-        disabled={pending !== null}
-        onSubmit={(tx, sender) =>
-          run("deposit", () =>
-            deposit({
-              data: { jobId: job.id, txHash: tx, sender },
-            }),
-          )
-        }
-      />
+      {!preReview ? (
+        <DepositForm
+          disabled={pending !== null}
+          onSubmit={(tx, sender) =>
+            run("deposit", () =>
+              deposit({
+                data: { jobId: job.id, txHash: tx, sender },
+              }),
+            )
+          }
+        />
+      ) : !terminalMessage ? <p className="text-base text-muted">{preReview}</p> : null}
       {job.status === "accepted" && !job.attempt ? (
         confirm === "claim" ? (
           <button type="button" onClick={() => run("claim", () => claim({ data: { jobId: job.id } }))} className="inline-flex min-h-11 items-center justify-center rounded-sm bg-ink px-3 py-2 text-center text-base font-medium text-paper">
@@ -513,7 +518,7 @@ function Client({ job, onChange, onError }: { job: JobView; onChange: (job: JobV
         <div className="flex flex-col gap-3">
           <p className="text-base leading-relaxed text-ink">Payment state: {job.attempt.state}.</p>
           {job.attempt.state === "sending" && <p className="text-base text-warn">Outcome unknown. Retrying re-sends the same key, which cannot pay twice.</p>}
-          {["claimed", "sending", "blocked", "read_original"].includes(job.attempt.state) && (
+          {job.status === "payment_in_flight" && ["claimed", "sending", "blocked", "read_original"].includes(job.attempt.state) && (
             <>
               <label className="text-base text-ink">
                 OutLayer API key (wk_…) — used once for this request, never stored
@@ -530,7 +535,7 @@ function Client({ job, onChange, onError }: { job: JobView; onChange: (job: JobV
               )}
             </>
           )}
-          {job.attempt.state === "awaiting_chain" && (
+          {job.status === "payment_in_flight" && job.attempt.state === "awaiting_chain" && (
             <button type="button" disabled={pending !== null} onClick={() => run("confirm", () => confirmChain({ data: { jobId: job.id } }))} className="min-h-11 rounded-sm border border-line px-3 text-base font-medium">Confirm on chain</button>
           )}
         </div>
@@ -552,14 +557,16 @@ function Client({ job, onChange, onError }: { job: JobView; onChange: (job: JobV
 }
 
 function Contributor({ job, onChange, onError }: { job: JobView; onChange: (job: JobView) => void; onError: (message: string) => void }) {
+  const preReview = preReviewProblem(job, new Date().toISOString());
+  const terminalMessage = terminalJobMessage(job.status);
   const link = useServerFn(linkPull);
   const [pending, setPending] = useState(false);
   const [local, setLocal] = useState<string | null>(null);
   return (
     <div className="flex min-w-0 flex-col gap-4 rounded-md border border-line bg-card p-4">
       <h2 className="font-display text-2xl">Your work</h2>
-      <p className="rounded-sm bg-warn-bg px-3 py-3 text-base leading-relaxed text-warn">
-        The {job.amountLabel} can be withdrawn by the client until a payment is actually sent. This is not guaranteed escrow.
+      <p className={terminalMessage ? "text-base leading-relaxed text-muted" : "rounded-sm bg-warn-bg px-3 py-3 text-base leading-relaxed text-warn"}>
+        {terminalMessage ?? `The ${job.amountLabel} can be withdrawn by the client until a payment is actually sent. This is not guaranteed escrow.`}
       </p>
       <p className="text-base leading-relaxed text-muted">Offer expires {job.expiresAt.slice(0, 10)}. Status: {STATUS[job.status]}.</p>
       {job.headSha ? (
@@ -571,7 +578,7 @@ function Contributor({ job, onChange, onError }: { job: JobView; onChange: (job:
             </a>
           ) : null}
         </div>
-      ) : (
+      ) : !preReview ? (
         <PullForm
           pending={pending}
           onSubmit={async (url) => {
@@ -588,22 +595,21 @@ function Contributor({ job, onChange, onError }: { job: JobView; onChange: (job:
             }
           }}
         />
-      )}
-      <p className="text-base text-muted">
-        {job.status === "confirmed"
-          ? "A chain receipt was checked for this payment."
-          : job.attempt
+      ) : !terminalMessage ? <p className="text-base text-muted">{preReview}</p> : null}
+      {!terminalMessage && <p className="text-base text-muted">
+        {job.attempt
             ? "A payment attempt is stored. It has not been confirmed on chain."
             : job.status === "accepted"
               ? "The approver accepted this commit. Payment is not sent yet."
               : "Acceptance has not happened."}
-      </p>
+      </p>}
       {local ? <p className="text-base text-hold">{local}</p> : null}
     </div>
   );
 }
 
 function Approver({ job, onChange, onError }: { job: JobView; onChange: (job: JobView) => void; onError: (message: string) => void }) {
+  const terminalMessage = terminalJobMessage(job.status);
   const decide = useServerFn(review);
   const [pending, setPending] = useState(false);
   const [confirm, setConfirm] = useState<"accepted" | "rejected" | null>(null);
@@ -628,7 +634,7 @@ function Approver({ job, onChange, onError }: { job: JobView; onChange: (job: Jo
     <div className="flex min-w-0 flex-col gap-4 rounded-md border border-line bg-card p-4">
       <h2 className="font-display text-2xl">This snapshot</h2>
       <p className="text-base leading-relaxed text-muted">
-        Accept only if this commit matches the criteria. Acceptance can start one attempt. It cannot promise the funds are still there.
+        {terminalMessage ?? "Accept only if this commit matches the criteria. Acceptance can start one attempt. It cannot promise the funds are still there."}
       </p>
       {job.prUrl ? (
         <a href={job.prUrl} target="_blank" rel="noreferrer" className="inline-flex min-h-11 items-center text-base text-sage underline">

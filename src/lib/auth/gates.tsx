@@ -1,5 +1,6 @@
 import { useState, useSyncExternalStore, type ReactNode } from "react";
 import { Navigate } from "@tanstack/react-router";
+import { EmailSignInLink } from "@/components/maintpay/email-sign-in-link";
 import { GROK_PROVIDERS, authEnabled, signIn, signOut } from "./client";
 import { hasGateSessionMarker } from "./gate-session-marker";
 import { resolveSignInGateState } from "./sign-in-gate";
@@ -66,6 +67,7 @@ export function SignInGate({
 export function SignInButtons() {
   return (
     <div className="flex w-full max-w-sm flex-col gap-2">
+      <EmailSignInLink />
       {GROK_PROVIDERS.map((p) => (
         <button
           key={p.providerId}

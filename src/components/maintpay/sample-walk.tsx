@@ -13,7 +13,7 @@ export function SampleWalk() {
           Back to MaintPay
         </Link>
         <Link to="/login" className="inline-flex min-h-11 items-center justify-center rounded-sm border border-line bg-card px-4 text-base font-medium text-ink">
-          Sign in
+          Sign in with email
         </Link>
       </div>
 
